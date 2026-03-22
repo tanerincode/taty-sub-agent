@@ -4,13 +4,22 @@ taty-sub-agent MCP server.
 Exposes sub-agent invocation as MCP tools so Claude Code (or any MCP client)
 can dispatch tasks to skill-matched sub-agents directly.
 """
+import sys
+from pathlib import Path
+
+# Ensure project root is on sys.path regardless of how the server is launched
+_project_root = str(Path(__file__).resolve().parents[1])
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import asyncio
 from typing import Optional
 
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
 from src.agent.invoker import AgentInvoker
 from src.memory.synatyx import SynatyxMemory
 from src.core.models import AgentTask, TaskBatch, Skill
+from src.core.config import settings
 
 mcp = FastMCP(
     name="taty-sub-agent",
@@ -22,6 +31,9 @@ mcp = FastMCP(
 
 _invoker: Optional[AgentInvoker] = None
 
+# In-memory token cache — populated via elicitation when keys are missing
+_token_cache: dict[str, str] = {}
+
 
 def get_invoker() -> AgentInvoker:
     global _invoker
@@ -30,8 +42,57 @@ def get_invoker() -> AgentInvoker:
     return _invoker
 
 
+async def _ensure_api_keys(ctx: Context, provider: str | None) -> None:
+    """
+    Ensure API keys are available. Strategy (in order):
+    1. Already in settings (env var / MCP config)
+    2. Already cached from a previous call this session
+    3. Elicit from user (supported by Augment + Claude Desktop)
+    4. If elicitation not supported, raise with instructions to use configure_keys tool
+    """
+    # Restore from session cache first
+    if "anthropic" in _token_cache and not settings.anthropic_api_key:
+        settings.anthropic_api_key = _token_cache["anthropic"]
+    if "openai" in _token_cache and not settings.openai_api_key:
+        settings.openai_api_key = _token_cache["openai"]
+
+    needs_anthropic = not settings.anthropic_api_key and provider != "openai"
+    needs_openai = not settings.openai_api_key and provider == "openai"
+
+    for key, label, needs in [
+        ("anthropic", "Anthropic", needs_anthropic),
+        ("openai", "OpenAI", needs_openai),
+    ]:
+        if not needs or key in _token_cache:
+            continue
+        try:
+            result = await ctx.elicit(
+                message=f"No {label.upper()}_API_KEY found. Enter your {label} bearer token:",
+                schema={
+                    "type": "object",
+                    "properties": {"token": {"type": "string", "title": f"{label} API Key"}},
+                    "required": ["token"],
+                },
+            )
+            if result.action == "submit":
+                token = result.data["token"]
+                _token_cache[key] = token
+                if key == "anthropic":
+                    settings.anthropic_api_key = token
+                else:
+                    settings.openai_api_key = token
+        except Exception:
+            # Client does not support elicitation (e.g. Claude CLI)
+            raise RuntimeError(
+                f"No {label} API key configured. "
+                f"Call configure_keys(anthropic_api_key='sk-ant-...') first, "
+                f"or set {label.upper()}_API_KEY in your MCP server environment."
+            )
+
+
 @mcp.tool()
 async def invoke_agent(
+    ctx: Context,
     task: str,
     skill_name: Optional[str] = None,
     context: Optional[str] = None,
@@ -55,6 +116,7 @@ async def invoke_agent(
         store_result: Whether to persist the result to Synatyx L2 memory (default: True).
         enable_tools: Give the sub-agent file and shell tools (write_file, read_file, list_directory, run_command). Default: True.
     """
+    await _ensure_api_keys(ctx, provider)
     from src.core.models import Provider
     invoker = get_invoker()
     skill = None
@@ -88,6 +150,7 @@ async def invoke_agent(
 
 @mcp.tool()
 async def invoke_parallel(
+    ctx: Context,
     tasks: list[dict],
     batch_description: str = "",
 ) -> list[dict]:
@@ -103,6 +166,9 @@ async def invoke_parallel(
                Example: [{"task": "write a REST API"}, {"task": "review this code"}]
         batch_description: Human-readable label for this batch (for logging).
     """
+    # Elicit keys using the first task's provider hint (if any)
+    first_provider = tasks[0].get("provider") if tasks else None
+    await _ensure_api_keys(ctx, first_provider)
     invoker = get_invoker()
 
     from src.core.models import Provider
@@ -131,6 +197,37 @@ async def invoke_parallel(
         }
         for r in results
     ]
+
+
+@mcp.tool()
+async def configure_keys(
+    anthropic_api_key: Optional[str] = None,
+    openai_api_key: Optional[str] = None,
+) -> dict:
+    """
+    Set API keys for this session without using environment variables.
+
+    Use this in clients that don't support elicitation (e.g. Claude CLI):
+        configure_keys(anthropic_api_key="sk-ant-...")
+
+    Keys are stored in memory for the duration of the server process.
+
+    Args:
+        anthropic_api_key: Anthropic bearer token (sk-ant-...)
+        openai_api_key: OpenAI bearer token (sk-proj-...)
+    """
+    updated = []
+    if anthropic_api_key:
+        _token_cache["anthropic"] = anthropic_api_key
+        settings.anthropic_api_key = anthropic_api_key
+        updated.append("anthropic")
+    if openai_api_key:
+        _token_cache["openai"] = openai_api_key
+        settings.openai_api_key = openai_api_key
+        updated.append("openai")
+    if not updated:
+        return {"status": "no_op", "message": "No keys provided."}
+    return {"status": "ok", "configured": updated}
 
 
 @mcp.tool()
