@@ -248,4 +248,27 @@ async def list_skills(project: Optional[str] = "taty-sub-agent") -> list[dict]:
     ]
 
 
-mcp.run(transport="stdio")
+import os
+
+
+def main() -> None:
+    _transport = os.getenv("MCP_TRANSPORT", "stdio")
+    if _transport == "http":
+        _host = os.getenv("MCP_HOST", "0.0.0.0")
+        _port = int(os.getenv("MCP_PORT", "8000"))
+        mcp.run(transport="streamable-http", host=_host, port=_port)
+    else:
+        import os
+
+transport = os.getenv("MCP_TRANSPORT", "stdio")
+host = os.getenv("MCP_HOST", "0.0.0.0")
+port = int(os.getenv("MCP_PORT", "8000"))
+
+if transport == "stdio":
+    mcp.run(transport="stdio")
+else:
+    mcp.run(transport="streamable-http", host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()

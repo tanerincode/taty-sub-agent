@@ -1,0 +1,16 @@
+.venv/
+.git/
+.claude/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*
+!.env.example
+tests/
+docs/
+scripts/
+*.md
+!README.md
+.mcp.json
