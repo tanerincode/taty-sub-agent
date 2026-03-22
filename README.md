@@ -102,6 +102,61 @@ Each sub-agent runs a live tool-calling loop and can:
 
 ---
 
+## Synatyx Dependency
+
+`taty-sub-agent` uses **[Synatyx](https://github.com/tanerincode/taty-v2)** as its long-term memory and RAG backend — a persistent context engine built for AI assistants that gives them memory across sessions via MCP.
+
+Synatyx provides:
+
+- **Skill storage & semantic retrieval** — skills are embedded into Qdrant and matched to tasks via vector search
+- **Result persistence** — agent outputs are stored in L2 (episodic) memory for future context
+- **4-layer memory model** — L1 (transient/Redis), L2 (episodic), L3 (semantic/Qdrant), L4 (user-global/PostgreSQL)
+- **Per-project namespacing** — each project gets its own Qdrant collection (`ctx_<slug>`)
+
+### Remote (recommended)
+
+Synatyx can be self-hosted or run remotely as an HTTP/SSE MCP server (`RUN_MODE=mcp-http`). Once deployed, point your MCP client at:
+
+```
+http://<your-host>:9001/mcp/sse
+```
+
+### Running locally
+
+Clone [Synatyx](https://github.com/tanerincode/synatyx) and start the infrastructure with Docker Compose:
+
+```bash
+git clone https://github.com/tanerincode/synatyx
+cd synatyx
+docker compose up -d
+```
+
+This starts Qdrant, Redis, PostgreSQL, runs Alembic migrations, and launches the garbage collection daemon. The MCP server itself runs outside Docker — add it to your `.mcp.json`:
+
+```json
+"synatyx": {
+  "command": "/path/to/synatyx/.venv/bin/python3",
+  "args": ["/path/to/synatyx/main.py"],
+  "env": {
+    "RUN_MODE": "mcp",
+    "QDRANT_HOST": "localhost",
+    "QDRANT_PORT": "6333",
+    "REDIS_URL": "redis://localhost:6379/0",
+    "POSTGRES_HOST": "localhost",
+    "POSTGRES_PORT": "5432",
+    "POSTGRES_DB": "context_engine",
+    "POSTGRES_USER": "context_engine",
+    "POSTGRES_PASSWORD": "context_engine"
+  }
+}
+```
+
+### Without Synatyx
+
+`taty-sub-agent` degrades gracefully — if Synatyx is unavailable, skill routing falls back to local keyword matching against `skills/*.md` files. All core functionality still works.
+
+---
+
 ## Project Structure
 
 ```
