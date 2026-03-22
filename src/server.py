@@ -29,6 +29,12 @@ mcp = FastMCP(
     ),
 )
 
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok", "service": "taty-sub-agent"})
+
 _invoker: Optional[AgentInvoker] = None
 
 # In-memory token cache — populated via elicitation when keys are missing
